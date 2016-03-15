@@ -5,21 +5,57 @@
 # General optional parameters:
 #   DATA_LOCATION, STUDY_NAME, STUDY_ID
 # Specific mandatory parameters for this upload script:
-#   RNASEQ_DATA_FILE, SUBJECT_SAMPLE_MAPPING, PLATFORM_FILE
+#   RNASEQ_DATA_FILE, SUBJECT_SAMPLE_MAPPING, R_JOBS_PSQL or KETTLE_JOBS_PSQL
 # Specific optional parameters for this upload script:
-#   TOP_NODE_PREFIX, SECURITY_REQUIRED, SOURCE_CD 
+#   TOP_NODE_PREFIX, SECURITY_REQUIRED, SOURCE_CD, DATA_TYPE
 
 # locate this shell script, and source a generic shell script to process all params related settings
 UPLOAD_SCRIPTS_DIRECTORY=$(dirname "$0")
 UPLOAD_DATA_TYPE="rnaseq"
 source "$UPLOAD_SCRIPTS_DIRECTORY/process_params.inc"
 
+if [ -z "$R_JOBS_PSQL" ]; then
+    if [ -z "$KETTLE_JOBS_PSQL" ]; then
+        echo "Error: Neither R_JOBS_PSQL nor KETTLE_JOBS_PSQL parameter has been set"
+        exit 1
+    else
+        R_JOBS_PSQL="${KETTLE_JOBS_PSQL}/../../R"
+    fi
+fi
+
+RSCRIPT="Rscript"
+if ! type "$RSCRIPT" 2>&1 > /dev/null; then
+    RSCRIPT="/opt/R/bin/Rscript"
+    if ! type "$RSCRIPT" > /dev/null; then
+        echo "Error: Rscript command not found"
+        exit 1
+    fi
+fi
+
 # Check if mandatory parameter values are provided
 if [ -z "$RNASEQ_DATA_FILE" ] || [ -z "$SUBJECT_SAMPLE_MAPPING" ] ; then
-        echo "Following variables need to be set:"
-	echo "    RNASEQ_DATA_FILE=$RNASEQ_DATA_FILE"
-	echo "    SUBJECT_SAMPLE_MAPPING=$SUBJECT_SAMPLE_MAPPING"
-    	exit 1
+    echo "Following variables need to be set:"
+    echo "    RNASEQ_DATA_FILE=$RNASEQ_DATA_FILE"
+    echo "    SUBJECT_SAMPLE_MAPPING=$SUBJECT_SAMPLE_MAPPING"
+    exit 1
+fi
+
+# Extract STUDY_ID from subject sample mapping file
+STUDY_ID_FROM_SSM=$(awk -F'\t' 'BEGIN{getline}{print $1}' "${SUBJECT_SAMPLE_MAPPING}" | sort -u | tr 'a-z' 'A-Z')
+if [ -z "$STUDY_ID_FROM_SSM" ]; then
+    echo "Error $0: No STUDY_ID provided in first column of subject sample mapping file $SUBJECT_SAMPLE_MAPPING"
+    exit 1
+fi
+
+# Check consistent use of STUDY_ID (if provided both as a parameter and in the subject sample mapping file)
+if [ -z "$STUDY_ID" ]; then
+    STUDY_ID=$STUDY_ID_FROM_SSM
+else
+    if [[ "$STUDY_ID" != "$STUDY_ID_FROM_SSM" ]]
+    then
+        echo "Error $0: STUDY_ID=$STUDY_ID defined in params differs from STUDY_ID=$STUDY_ID_FROM_SSM defined in $SUBJECT_SAMPLE_MAPPING"
+        exit 1
+    fi
 fi
 
 SECURITY_REQUIRED=${SECURITY_REQUIRED:-N}
@@ -33,6 +69,19 @@ fi
 TOP_NODE="\\${TOP_NODE_PREFIX}\\${STUDY_NAME}\\"
 
 SOURCE_CD=${SOURCE_CD:-STD}
+DATA_TYPE=${DATA_TYPE:-R}    # Normalized readcounts are loaded as R (raw) by default. Use L (log2) to load log2 normalized readcounts.
+
+# The unpivoted-file which will be loaded into the database
+RNASEQ_DATA_FILE_UPLOAD="${RNASEQ_DATA_FILE}".upload
+
+# Create the unpivoted file to be loaded into the database.
+echo "Start re-arranging input..."
+${RSCRIPT} ${R_JOBS_PSQL}/RNASeq/unpivot_RNASeq_data.R studyID=${STUDY_ID} \
+                                                       RNASeqFile="${RNASEQ_DATA_FILE}" \
+                                                       dataOUT="${RNASEQ_DATA_FILE_UPLOAD}"
+
+echo "unpivoted input stored in file: ${RNASEQ_DATA_FILE_UPLOAD}"
+echo ""
 
 # Upload SubjectSamplMap
   echo "Uploading SubjectSampleMap from: ${SUBJECT_SAMPLE_MAPPING} into the landing-zone"
@@ -44,18 +93,18 @@ SOURCE_CD=${SOURCE_CD:-STD}
 _END
 
 # Upload data-file into the landing-zone
-  echo "Entering data from: ${RNASEQ_DATA_FILE} into the landing-zone"
+  echo "Entering data from: '${RNASEQ_DATA_FILE_UPLOAD}' into the landing-zone"
   $PGSQL_BIN/psql <<_END
     truncate TABLE tm_lz.lt_src_rnaseq_data;
     \copy tm_lz.lt_src_rnaseq_data \
         ( trial_name, region_name, expr_id, readcount, normalized_readcount )  \
-        FROM '${RNASEQ_DATA_FILE}' WITH (FORMAT CSV, DELIMITER E'\t', HEADER, QUOTE E'\b');
+        FROM '${RNASEQ_DATA_FILE_UPLOAD}' WITH (FORMAT CSV, DELIMITER E'\t', HEADER, QUOTE E'\b');
 _END
 
 # transport data from the landing-zone into the transmart tables
   echo "Move data from landing zone into transmart/i2b2 tables"
   $PGSQL_BIN/psql <<_END
-    select tm_cz.i2b2_process_rnaseq_data('${STUDY_ID}', '${TOP_NODE}', '${SOURCE_CD}', '${SECURITY_REQUIRED}') 
+    select tm_cz.i2b2_process_rnaseq_data('${STUDY_ID}', '${TOP_NODE}', '${SOURCE_CD}', '${SECURITY_REQUIRED}', '${DATA_TYPE}')
 _END
 
 echo "All done."
