@@ -33,6 +33,8 @@ PGSQL_BIN=$HOME/pg/bin/
 # }}}
 
 # {{{ Oracle
+# Uncomment this to enable Oracle
+#ORACLE=1
 ORAHOST=localhost
 ORAPORT=1521
 ORASID=orcl
@@ -46,6 +48,7 @@ ORAPASSWORD=mypassword
 # by transmart-data. In that case, you must also specify an oracle owned
 # directory that will be used to set the system param DB_CREATE_FILE_DEST
 ORACLE_MANAGE_TABLESPACES=0
+# Comment the line below when you use an Oracle Database instance from Amazon RDS.
 ORACLE_TABLESPACES_DIR=/home/oracle/app/oracle/oradata
 # }}}
 
@@ -108,6 +111,6 @@ TSUSER_HOME=$HOME/
 export PGHOST PGPORT PGDATABASE PGUSER PGPASSWORD TABLESPACES PGSQL_BIN \
 	KETTLE_JOBS_PSQL KETTLE_JOBS_ORA KITCHEN TSUSER_HOME ORAHOST ORAPORT \
 	ORASID ORASVC ORAUSER ORAPASSWORD ORACLE_MANAGE_TABLESPACES \
-	ORACLE_TABLESPACES_DIR
+	ORACLE_TABLESPACES_DIR ORACLE
 
 # vim: fdm=marker
